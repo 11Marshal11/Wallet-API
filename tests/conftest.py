@@ -16,7 +16,7 @@ os.environ.setdefault(
     "postgresql+asyncpg://wallet:wallet@localhost:5432/wallet_test",
 )
 
-from app.database import Base, get_session  # noqa: E402
+from app.database import Base, get_session  # noqa: E402, I001
 from app.main import app  # noqa: E402
 
 
