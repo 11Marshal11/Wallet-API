@@ -1,4 +1,5 @@
 import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,7 +19,7 @@ router = APIRouter(prefix="/api/v1/wallets", tags=["wallets"])
 )
 async def get_wallet(
     wallet_id: uuid.UUID,
-    session: AsyncSession = Depends(get_session),
+    session: Annotated[AsyncSession, Depends(get_session)],
 ) -> WalletResponse:
     try:
         wallet = await services.get_wallet(session, wallet_id)
@@ -41,7 +42,7 @@ async def get_wallet(
 async def operate(
     wallet_id: uuid.UUID,
     payload: OperationRequest,
-    session: AsyncSession = Depends(get_session),
+    session: Annotated[AsyncSession, Depends(get_session)],
 ) -> WalletResponse:
     try:
         wallet = await services.apply_operation(
