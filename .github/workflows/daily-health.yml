@@ -1,0 +1,154 @@
+name: Daily project health
+
+on:
+  schedule:
+    - cron: "37 7 * * *"
+      timezone: "Europe/Berlin"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-project-health
+  cancel-in-progress: false
+
+jobs:
+  health:
+    name: Ruff and pytest
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: wallet
+          POSTGRES_PASSWORD: wallet
+          POSTGRES_DB: wallet_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U wallet -d wallet_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://wallet:wallet@localhost:5432/wallet_test
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && pip install -r requirements-dev.txt
+
+      - name: Run Ruff and pytest
+        id: checks
+        shell: bash
+        run: |
+          set +e
+
+          ruff check . 2>&1 | tee ruff.log
+          ruff_status=${PIPESTATUS[0]}
+
+          pytest -q 2>&1 | tee pytest.log
+          pytest_status=${PIPESTATUS[0]}
+
+          echo "ruff_status=${ruff_status}" >> "${GITHUB_OUTPUT}"
+          echo "pytest_status=${pytest_status}" >> "${GITHUB_OUTPUT}"
+
+          exit 0
+
+      - name: Build daily report
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p reports
+
+          checked_at="$(TZ=Europe/Berlin date '+%Y-%m-%d %H:%M:%S %Z')"
+          ruff_status="${{ steps.checks.outputs.ruff_status }}"
+          pytest_status="${{ steps.checks.outputs.pytest_status }}"
+
+          if [[ "${ruff_status}" == "0" ]]; then
+            ruff_result="PASS"
+          else
+            ruff_result="FAIL"
+          fi
+
+          if [[ "${pytest_status}" == "0" ]]; then
+            pytest_result="PASS"
+          else
+            pytest_result="FAIL"
+          fi
+
+          ruff_summary="Checks did not start"
+          pytest_summary="Tests did not start"
+
+          if [[ -s ruff.log ]]; then
+            ruff_summary="$(tail -n 1 ruff.log | tr -d '\r')"
+          fi
+
+          if [[ -s pytest.log ]]; then
+            pytest_summary="$(tail -n 1 pytest.log | tr -d '\r')"
+          fi
+
+          cat > reports/daily-health.md <<EOF
+          # Daily project health
+
+          Last checked: **${checked_at}**
+
+          | Check | Result | Summary |
+          |---|---|---|
+          | Ruff | **${ruff_result}** | ${ruff_summary} |
+          | Pytest + PostgreSQL 16 | **${pytest_result}** | ${pytest_summary} |
+
+          [Open workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+          This report is generated automatically by GitHub Actions.
+          EOF
+
+      - name: Commit report to the default branch
+        if: ${{ always() && github.ref_name == github.event.repository.default_branch }}
+        shell: bash
+        run: |
+          git config user.name "11Marshal11"
+          git config user.email "236251269+11Marshal11@users.noreply.github.com"
+
+          git add reports/daily-health.md
+
+          if git diff --cached --quiet; then
+            echo "Report is unchanged."
+            exit 0
+          fi
+
+          report_date="$(TZ=Europe/Berlin date '+%Y-%m-%d')"
+          git commit -m "chore: update daily health report (${report_date})"
+
+          for attempt in 1 2 3; do
+            if git push origin "HEAD:${{ github.event.repository.default_branch }}"; then
+              exit 0
+            fi
+            git pull --rebase origin "${{ github.event.repository.default_branch }}"
+          done
+
+          echo "Could not push the report after three attempts."
+          exit 1
+
+      - name: Fail workflow when checks fail
+        if: always()
+        shell: bash
+        run: |
+          if [[ "${{ steps.checks.outputs.ruff_status }}" != "0" ||                 "${{ steps.checks.outputs.pytest_status }}" != "0" ]]; then
+            echo "Ruff or pytest failed. See reports/daily-health.md for details."
+            exit 1
+          fi
